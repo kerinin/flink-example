@@ -19,25 +19,31 @@ public class App
           TableEnvironment tableEnv = TableEnvironment.create(settings);
     
           // Create a source table
-          tableEnv.createTemporaryTable("SourceTable", TableDescriptor.forConnector("datagen")
+          tableEnv.createTemporaryTable("RawSourceTable", TableDescriptor.forConnector("datagen")
             .schema(Schema.newBuilder()
               .column("ts", DataTypes.TIMESTAMP_LTZ())
               .column("entity", DataTypes.STRING())
               .column("val", DataTypes.INT())
-          .build())
-        .option(DataGenConnectorOptions.ROWS_PER_SECOND, 100L)
-        .build());
+              .build())
+            .option(DataGenConnectorOptions.ROWS_PER_SECOND, 1L)
+            .option(DataGenConnectorOptions.NUMBER_OF_ROWS, 10L)
+            .build());
 
-      // Create a sink table (using SQL DDL)
-      tableEnv.executeSql("CREATE TEMPORARY TABLE SinkTable WITH ('connector' = 'blackhole') LIKE SourceTable (EXCLUDING OPTIONS) ");
+          // Cleanup generated data
+          // This just truncates the entity ID so we can group by it.
+          tableEnv.createTemporaryView("SourceTable", tableEnv.sqlQuery(
+            "SELECT *, LEFT(entity, 1) as entity_short " +
+            "FROM RawSourceTable "
+          ));
 
-      // Create a Table object from a Table API query
-      Table table1 = tableEnv.from("SourceTable");
+          // Create a Table object from a SQL query
+          Table table2 = tableEnv.sqlQuery(
+            "SELECT entity_short, count(*) " +
+            "FROM SourceTable " +
+            "GROUP BY entity_short"
+          );
 
-      // Create a Table object from a SQL query
-      Table table2 = tableEnv.sqlQuery("SELECT * FROM SourceTable");
-
-      // Emit a Table API result Table to a TableSink, same for SQL result
-      TableResult tableResult = table1.insertInto("SinkTable").execute();
+          // Execute and dump to STDOUT
+          table2.execute().print();
     }
 }
