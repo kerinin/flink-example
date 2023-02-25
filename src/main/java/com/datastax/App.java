@@ -18,6 +18,7 @@ import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.util.Collector;
@@ -115,9 +116,8 @@ public class App
             Types.ROW_NAMED(
                 new String[] {"ts", "entity", "loss_duration"},
                 Types.LOCAL_DATE_TIME, Types.STRING, Types.INT));
-
         tableEnv.createTemporaryView(
-          "FeaturesVer",
+          "Features",
           featureStream,
           Schema.newBuilder()
               .column("ts", DataTypes.TIMESTAMP(3).notNull())
@@ -150,7 +150,7 @@ public class App
           "    ) as defeat_count " +
           "  FROM GamePlay " +
           ") AS example " +
-          "LEFT JOIN FeaturesVer FOR SYSTEM_TIME AS OF example.ts AS features " +
+          "LEFT JOIN Features FOR SYSTEM_TIME AS OF example.ts AS features " +
           "ON example.entity = features.entity " +
           "WHERE defeat_count = 2 "
         );
