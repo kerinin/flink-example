@@ -165,27 +165,29 @@ public class App
         // becasue it demonstrates that the re-assigned event time is being used for the
         // point-in-time join against target values.
         tableEnv.createTemporaryView(
-          "Target", 
-          tableEnv.sqlQuery(
-            "SELECT ts, entity, count(1) OVER (PARTITION BY entity ORDER BY ts) as cnt " +
-            "FROM Purchase"
-          ));
-        tableEnv.createTemporaryView(
-          "TargetVer", 
-          tableEnv.sqlQuery(
-            "SELECT * " +
-            "FROM ( " +
-            "  SELECT *, " +
-            "   ROW_NUMBER() OVER (PARTITION BY entity ORDER BY ts DESC) AS rownum " +
-            "  FROM Target) " +
-            "WHERE rownum = 1"
-          ));
+          "Target",
+          tableEnv.toChangelogStream(
+          tableEnv.sqlQuery( "SELECT entity, count(1) as cnt FROM Purchase GROUP BY entity"))
+            .process(new AddWatermark())
+            .returns(Types.ROW_NAMED(
+                new String[] {"ts", "entity", "cnt"},
+                Types.LOCAL_DATE_TIME, Types.STRING, Types.LONG)),
+          Schema.newBuilder()
+              .column("ts", DataTypes.TIMESTAMP(3).notNull())
+              .column("entity", DataTypes.STRING().notNull())
+              .column("cnt", DataTypes.BIGINT())
+              .primaryKey("entity")
+              .watermark("ts", "ts")
+              .build()
+        );
+
+
         tableEnv.createTemporaryView(
           "ExampleWithTarget", 
           tableEnv.sqlQuery(
             "SELECT Example.ts, Example.label_time, target.ts, Example.entity, Example.loss_duration, target.cnt " +
             "FROM Example " +
-            "LEFT JOIN TargetVer FOR SYSTEM_TIME AS OF Example.label_time AS target " +
+            "LEFT JOIN Target FOR SYSTEM_TIME AS OF Example.label_time AS target " +
             "ON Example.entity = target.entity "
           )); 
 
