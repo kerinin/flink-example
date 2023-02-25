@@ -95,30 +95,15 @@ public class App
         // STEP 1: Define features
         // These features are going to be consumed to build a versioned table.
         // This requires that each row have a key and a timestamp - the versioned row exposes
-        // the most recent row for each key, and can be used as the RHS of a temporal join.
-        DataStream<Row> featureStream = tableEnv.toChangelogStream(
-          tableEnv.sqlQuery(
-            "SELECT entity, sum(duration) as loss_duration FROM GamePlay WHERE won = false GROUP BY entity"
-          )).process(new ProcessFunction<Row, Row>() {
-
-            // NOTE: This might be better as a keyed process function
-            @Override
-            public void processElement(Row value, ProcessFunction<Row,Row>.Context ctx, Collector<Row> out) throws Exception {
-              if (value.getKind() == RowKind.INSERT || value.getKind() == RowKind.UPDATE_AFTER) {
-                // NOTE: Pulling this from the watermark is a potential source of temporal leakage.
-                // It would be much preferable to access the event time, but it doesn't appear
-                // to be preserved from the input table to the changelog
-                LocalDateTime rowTime = Instant.ofEpochMilli(ctx.timerService().currentWatermark()).atZone(ZoneOffset.UTC).toLocalDateTime();
-                out.collect( Row.join( Row.ofKind(RowKind.INSERT, rowTime), value));
-              }
-            }
-          }).returns(
-            Types.ROW_NAMED(
-                new String[] {"ts", "entity", "loss_duration"},
-                Types.LOCAL_DATE_TIME, Types.STRING, Types.INT));
+        // the most recent row for each key, and can be used as the RHS of a temporal join
         tableEnv.createTemporaryView(
           "Features",
-          featureStream,
+          tableEnv.toChangelogStream(
+          tableEnv.sqlQuery( "SELECT entity, sum(duration) as loss_duration FROM GamePlay WHERE won = false GROUP BY entity"))
+            .process(new AddWatermark())
+            .returns(Types.ROW_NAMED(
+                new String[] {"ts", "entity", "loss_duration"},
+                Types.LOCAL_DATE_TIME, Types.STRING, Types.INT)),
           Schema.newBuilder()
               .column("ts", DataTypes.TIMESTAMP(3).notNull())
               .column("entity", DataTypes.STRING().notNull())
