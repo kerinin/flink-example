@@ -62,19 +62,19 @@ public class App
         // The wrapping selection then filters rows where the loss count is two.
         // The time of the second loss is used as the prediction time, and an hour later is used as the label time.
         String examples = 
-        "SELECT user AS _entity, ts AS _prediction_time, TIMESTAMPADD(HOUR, 1, ts) AS _label_time " +
-        "FROM ( " +
-        "  SELECT " +
-        "    user, " +
-        "    ts, " +
-        "    count(NULLIF(won,true)) OVER ( " +
-        "      PARTITION BY user " +
-        "      ORDER BY ts " +
-        "      ROWS BETWEEN 1 PRECEDING AND CURRENT ROW " +
-        "    ) as defeat_count " +
-        "  FROM GamePlay " +
-        ")" +
-        "WHERE defeat_count = 2 ";
+          "SELECT user AS _entity, ts AS _prediction_time, TIMESTAMPADD(HOUR, 1, ts) AS _label_time " +
+          "FROM ( " +
+          "  SELECT " +
+          "    user, " +
+          "    ts, " +
+          "    count(NULLIF(won,true)) OVER ( " +
+          "      PARTITION BY user " +
+          "      ORDER BY ts " +
+          "      ROWS BETWEEN 1 PRECEDING AND CURRENT ROW " +
+          "    ) as defeat_count " +
+          "  FROM GamePlay " +
+          ")" +
+          "WHERE defeat_count = 2 ";
 
         Table exampleTable = createTrainingExamples(tableEnv, features, target, examples);
         // +I[Bob, 2021-08-21T03:46, 2021-08-21T04:46, 11, 1]
@@ -96,24 +96,23 @@ public class App
         // This needs a second schema definition - notice that this is where we're
         // telling Flink what the "event time" of each row is, and defining the
         // allowed lateness for events.
-        DataStream<Row> victories = env.fromElements(
-          Row.of(LocalDateTime.parse("2021-08-21T02:30:00"), "Alice", 10, true),
-          Row.of(LocalDateTime.parse("2021-08-21T02:35:00"), "Bob", 3, false),
-          Row.of(LocalDateTime.parse("2021-08-21T03:46:00"), "Bob", 8, false),
-          Row.of(LocalDateTime.parse("2021-08-21T03:58:00"), "Bob", 23, true),
-          Row.of(LocalDateTime.parse("2021-08-21T04:25:00"), "Bob", 8, true),
-          Row.of(LocalDateTime.parse("2021-08-21T05:05:00"), "Alice", 53, true),
-          Row.of(LocalDateTime.parse("2021-08-21T05:36:00"), "Alice", 2, false),
-          Row.of(LocalDateTime.parse("2021-08-21T07:22:00"), "Bob", 7, false),
-          Row.of(LocalDateTime.parse("2021-08-21T08:35:00"), "Alice", 5, false),
-          Row.of(LocalDateTime.parse("2021-08-21T10:01:00"), "Alice", 43, true))
-          .returns(
-            Types.ROW_NAMED(
-                new String[] {"ts", "user", "duration", "won"},
-                Types.LOCAL_DATE_TIME, Types.STRING, Types.INT, Types.BOOLEAN));
         tableEnv.createTemporaryView(
           "GamePlay",
-          victories,
+          env.fromElements(
+            Row.of(LocalDateTime.parse("2021-08-21T02:30:00"), "Alice", 10, true),
+            Row.of(LocalDateTime.parse("2021-08-21T02:35:00"), "Bob", 3, false),
+            Row.of(LocalDateTime.parse("2021-08-21T03:46:00"), "Bob", 8, false),
+            Row.of(LocalDateTime.parse("2021-08-21T03:58:00"), "Bob", 23, true),
+            Row.of(LocalDateTime.parse("2021-08-21T04:25:00"), "Bob", 8, true),
+            Row.of(LocalDateTime.parse("2021-08-21T05:05:00"), "Alice", 53, true),
+            Row.of(LocalDateTime.parse("2021-08-21T05:36:00"), "Alice", 2, false),
+            Row.of(LocalDateTime.parse("2021-08-21T07:22:00"), "Bob", 7, false),
+            Row.of(LocalDateTime.parse("2021-08-21T08:35:00"), "Alice", 5, false),
+            Row.of(LocalDateTime.parse("2021-08-21T10:01:00"), "Alice", 43, true))
+            .returns(
+              Types.ROW_NAMED(
+                  new String[] {"ts", "user", "duration", "won"},
+                  Types.LOCAL_DATE_TIME, Types.STRING, Types.INT, Types.BOOLEAN)),
           Schema.newBuilder()
               .column("ts", DataTypes.TIMESTAMP(3).notNull())
               .column("user", DataTypes.STRING().notNull())
@@ -124,17 +123,16 @@ public class App
 
         // Build Purchase table
         // Same as for GamePlay
-        DataStream<Row> purchases = env.fromElements(
-          Row.of(LocalDateTime.parse("2021-08-21T01:02:00"), "Alice"),
-          Row.of(LocalDateTime.parse("2021-08-21T01:35:00"), "Alice"),
-          Row.of(LocalDateTime.parse("2021-08-21T03:51:00"), "Bob"))
-          .returns(
-            Types.ROW_NAMED(
-                new String[] {"ts", "user"},
-                Types.LOCAL_DATE_TIME, Types.STRING));
         tableEnv.createTemporaryView(
           "Purchase",
-          purchases,
+          env.fromElements(
+            Row.of(LocalDateTime.parse("2021-08-21T01:02:00"), "Alice"),
+            Row.of(LocalDateTime.parse("2021-08-21T01:35:00"), "Alice"),
+            Row.of(LocalDateTime.parse("2021-08-21T03:51:00"), "Bob"))
+            .returns(
+              Types.ROW_NAMED(
+                  new String[] {"ts", "user"},
+                  Types.LOCAL_DATE_TIME, Types.STRING)),
           Schema.newBuilder()
               .column("ts", DataTypes.TIMESTAMP(3))
               .column("user", DataTypes.STRING())
@@ -161,11 +159,11 @@ public class App
         tableEnv.createTemporaryView(
           "Features",
           tableEnv.toChangelogStream(
-          tableEnv.sqlQuery(features))
-            .process(new AddWatermark())
-            .returns(Types.ROW_NAMED(
-                new String[] {"_change_time", "_entity", "loss_duration"},
-                Types.LOCAL_DATE_TIME, Types.STRING, Types.INT)),
+            tableEnv.sqlQuery(features))
+              .process(new AddWatermark())
+              .returns(Types.ROW_NAMED(
+                  new String[] {"_change_time", "_entity", "loss_duration"},
+                  Types.LOCAL_DATE_TIME, Types.STRING, Types.INT)),
           Schema.newBuilder()
               .column("_change_time", DataTypes.TIMESTAMP(3).notNull())
               .column("_entity", DataTypes.STRING().notNull())
@@ -181,11 +179,11 @@ public class App
         tableEnv.createTemporaryView(
           "Target",
           tableEnv.toChangelogStream(
-          tableEnv.sqlQuery(target))
-            .process(new AddWatermark())
-            .returns(Types.ROW_NAMED(
-                new String[] {"_change_time", "_entity", "cnt"},
-                Types.LOCAL_DATE_TIME, Types.STRING, Types.LONG)),
+            tableEnv.sqlQuery(target))
+              .process(new AddWatermark())
+              .returns(Types.ROW_NAMED(
+                  new String[] {"_change_time", "_entity", "cnt"},
+                  Types.LOCAL_DATE_TIME, Types.STRING, Types.LONG)),
           Schema.newBuilder()
               .column("_change_time", DataTypes.TIMESTAMP(3).notNull())
               .column("_entity", DataTypes.STRING().notNull())
@@ -196,21 +194,26 @@ public class App
         );
 
         // Join features into examples.
+        //
+        // This is a "temporal join", where each LHS row includes a timestamp, and each RHS row produces the value of a key "as-of" that time.
+        // The LHS timestamp must be the event time of each row, and the RHS must be a "versioned table".
+        // This query is the reason we did all that stuff above to convert a standard query into a versioned table.
         Table exampleTable = tableEnv.sqlQuery(
           "WITH example AS ( " + examples + ")" +
           "SELECT example._entity, example._prediction_time, example._label_time, features.loss_duration " +
           "FROM example " +
           "LEFT JOIN Features FOR SYSTEM_TIME AS OF example._prediction_time AS features " +
-          "ON example._entity = features._entity "
-        );
+          "ON example._entity = features._entity ");
         
         // Shift examples forward to label time
         //
-        // This plays some tricks with Flink's API's to re-assign the event time associated
-        // with each event. First, we calculated the desired label time as one of the features
-        // (this was part of the previous step). Next, the example are converted to the "DataStream" 
-        // API and then a view (in the Table API) is built from the data stream. This allows us to 
-        // provide a new schema for the view, where the label time is used for the watermark. 
+        // Temporal joins are only supported with respect to the event time of the join's LHS.
+        // Naively, this would prevent us from joining tables as-of different points in time (ie prediciton time as well as label time).
+        // This plays some tricks with Flink's API's to re-assign the event time associated with each event to work around this limitation. 
+        //
+        // First, the examples are converted to the "DataStream" API, then a temporary view (in the Table API) is built from the datastream.
+        // When we build the view we can specify a new schema, and part of the schema is the watermark column.
+        // This allows us to _change_ which column is used as the watermark from `_prediction_time` to `_label_time`.
         tableEnv.createTemporaryView(
           "example",
           tableEnv.toDataStream(exampleTable),
@@ -222,7 +225,7 @@ public class App
               .watermark("_label_time", "_label_time")
               .build());
 
-        // Join targets into examples
+        // Finally, we join targets into examples using a temporal join relative to label time.
         return tableEnv.sqlQuery(
             "SELECT example._entity, example._prediction_time, example._label_time, example.loss_duration, target.cnt " +
             "FROM example " +
