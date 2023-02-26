@@ -126,10 +126,11 @@ public class App
     }
 
     static Table createTrainingExamples(StreamTableEnvironment tableEnv, String features, String target) throws Exception {
-            // STEP 1: Define features
+        // Define features
+        // 
         // These features are going to be consumed to build a versioned table.
-        // This requires that each row have a key and a timestamp - the versioned row exposes
-        // the most recent row for each key, and can be used as the RHS of a temporal join
+        // This requires that each row have a key and a timestamp.
+        // The versioned row exposes the most recent row for each key, and can be used as the RHS of a temporal join.
         tableEnv.createTemporaryView(
           "Features",
           tableEnv.toChangelogStream(
@@ -147,6 +148,26 @@ public class App
               .build()
         );
                
+        // Define target
+        //
+        // This follows the same pattern as the features, as we'll be joining these results in the same way.
+        tableEnv.createTemporaryView(
+          "Target",
+          tableEnv.toChangelogStream(
+          tableEnv.sqlQuery(target))
+            .process(new AddWatermark())
+            .returns(Types.ROW_NAMED(
+                new String[] {"ts", "entity", "cnt"},
+                Types.LOCAL_DATE_TIME, Types.STRING, Types.LONG)),
+          Schema.newBuilder()
+              .column("ts", DataTypes.TIMESTAMP(3).notNull())
+              .column("entity", DataTypes.STRING().notNull())
+              .column("cnt", DataTypes.BIGINT())
+              .primaryKey("entity")
+              .watermark("ts", "ts")
+              .build()
+        );
+
         // STEP 2: Define prediction times
         //
         // The SQL for this is ugly. The inner selection does a windowed aggregation over 2 consecutive game
@@ -192,28 +213,7 @@ public class App
               .watermark("label_time", "label_time - INTERVAL '1' MINUTE")
               .build());
 
-        // STEP 4: Append target value
-        //
-        // This is a relatively straightforward temporal join and behaves about the same
-        // as when we joined the features in to begin with. This is only really interesting
-        // becasue it demonstrates that the re-assigned event time is being used for the
-        // point-in-time join against target values.
-        tableEnv.createTemporaryView(
-          "Target",
-          tableEnv.toChangelogStream(
-          tableEnv.sqlQuery(target))
-            .process(new AddWatermark())
-            .returns(Types.ROW_NAMED(
-                new String[] {"ts", "entity", "cnt"},
-                Types.LOCAL_DATE_TIME, Types.STRING, Types.LONG)),
-          Schema.newBuilder()
-              .column("ts", DataTypes.TIMESTAMP(3).notNull())
-              .column("entity", DataTypes.STRING().notNull())
-              .column("cnt", DataTypes.BIGINT())
-              .primaryKey("entity")
-              .watermark("ts", "ts")
-              .build()
-        );
+
 
         return tableEnv.sqlQuery(
             "SELECT Example.ts, Example.label_time, target.ts, Example.entity, Example.loss_duration, target.cnt " +
