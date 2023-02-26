@@ -22,8 +22,6 @@ public class App
         /*
          * Real-time ML example
          * 
-         * This roughly follows the example in the slides: https://docs.google.com/presentation/d/1DEuk2NDiujmzIHAHDTX_dc8-sUHqf0h1KSl4HdpWKpQ/edit#slide=id.p12
-         * 
          * Questions:
          * 
          * - How is a temporal join different than a vanilla join consumed as a changelog?
