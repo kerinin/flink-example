@@ -55,7 +55,10 @@ public class App
         // Create GamePlay and Purchase tables and populate them with some rows.
         setupTables(env, tableEnv);
 
-        Table exampleTable = createTrainingExamples(tableEnv);
+        String features = "SELECT entity, sum(duration) as loss_duration FROM GamePlay WHERE won = false GROUP BY entity";
+        String target = "SELECT entity, count(1) as cnt FROM Purchase GROUP BY entity";
+
+        Table exampleTable = createTrainingExamples(tableEnv, features, target);
         // +I[2021-08-21T03:46, 2021-08-21T04:46, 2021-08-21T03:51, Bob, 11, 1]
         // +I[2021-08-21T08:35, 2021-08-21T09:35, 2021-08-21T01:35, Alice, 7, 2]
 
@@ -122,7 +125,7 @@ public class App
               .build());
     }
 
-    static Table createTrainingExamples(StreamTableEnvironment tableEnv) throws Exception {
+    static Table createTrainingExamples(StreamTableEnvironment tableEnv, String features, String target) throws Exception {
             // STEP 1: Define features
         // These features are going to be consumed to build a versioned table.
         // This requires that each row have a key and a timestamp - the versioned row exposes
@@ -130,7 +133,7 @@ public class App
         tableEnv.createTemporaryView(
           "Features",
           tableEnv.toChangelogStream(
-          tableEnv.sqlQuery( "SELECT entity, sum(duration) as loss_duration FROM GamePlay WHERE won = false GROUP BY entity"))
+          tableEnv.sqlQuery(features))
             .process(new AddWatermark())
             .returns(Types.ROW_NAMED(
                 new String[] {"ts", "entity", "loss_duration"},
@@ -198,7 +201,7 @@ public class App
         tableEnv.createTemporaryView(
           "Target",
           tableEnv.toChangelogStream(
-          tableEnv.sqlQuery( "SELECT entity, count(1) as cnt FROM Purchase GROUP BY entity"))
+          tableEnv.sqlQuery(target))
             .process(new AddWatermark())
             .returns(Types.ROW_NAMED(
                 new String[] {"ts", "entity", "cnt"},
