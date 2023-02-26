@@ -1,34 +1,19 @@
 package com.datastax;
 
-import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 
 import org.apache.flink.core.fs.FileSystem.WriteMode;
-import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.ProcessFunction;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.types.Row;
-import org.apache.flink.types.RowKind;
-import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.util.Collector;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class App 
 {
-    private static final Logger LOG = LoggerFactory.getLogger(App.class);
-
     public static void main(String[] args) throws Exception
         {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -53,14 +38,49 @@ public class App
 
 
         // Create GamePlay and Purchase tables and populate them with some rows.
+        // 
+        // These are "event" tables where each row is associated with a time.
         setupTables(env, tableEnv);
 
-        String features = "SELECT entity, sum(duration) as loss_duration FROM GamePlay WHERE won = false GROUP BY entity";
-        String target = "SELECT entity, count(1) as cnt FROM Purchase GROUP BY entity";
+        // Define features. 
+        //
+        // Note that this is a "vanilla" SQL expression with no concept of time.
+        // This query can be used unmodified to populate a feature cache.
+        String features = "SELECT user AS _entity, sum(duration) as loss_duration FROM GamePlay WHERE won = false GROUP BY user";
 
-        Table exampleTable = createTrainingExamples(tableEnv, features, target);
-        // +I[2021-08-21T03:46, 2021-08-21T04:46, 2021-08-21T03:51, Bob, 11, 1]
-        // +I[2021-08-21T08:35, 2021-08-21T09:35, 2021-08-21T01:35, Alice, 7, 2]
+        // Define target
+        //
+        // Note again that this query has no notion of time.
+        String target = "SELECT user AS _entity, count(1) as cnt FROM Purchase GROUP BY user";
+
+        // Create an example each time a player loses for the second time in a row.
+        //
+        // This query should produce rows describing training examples.
+        // Each example specifies the entity for which to compute the example, the prediction time at which the features should be observed and the label time at which the target should be observed.
+        // 
+        // This is a "vanilla" query that returns time values - it doesn't depend on any unusual "streaming SQL" features.
+        //
+        // The inner selection does a windowed aggregation over 2 consecutive game play events and counts how many of them were lost.
+        // The wrapping selection then filters rows where the loss count is two.
+        // The time of the second loss is used as the prediction time, and an hour later is used as the label time.
+        String examples = 
+        "SELECT user AS _entity, ts AS _prediction_time, TIMESTAMPADD(HOUR, 1, ts) AS _label_time " +
+        "FROM ( " +
+        "  SELECT " +
+        "    user, " +
+        "    ts, " +
+        "    count(NULLIF(won,true)) OVER ( " +
+        "      PARTITION BY user " +
+        "      ORDER BY ts " +
+        "      ROWS BETWEEN 1 PRECEDING AND CURRENT ROW " +
+        "    ) as defeat_count " +
+        "  FROM GamePlay " +
+        ")" +
+        "WHERE defeat_count = 2 ";
+
+        Table exampleTable = createTrainingExamples(tableEnv, features, target, examples);
+        // +I[Bob, 2021-08-21T03:46, 2021-08-21T04:46, 11, 1]
+        // +I[Alice, 2021-08-21T08:35, 2021-08-21T09:35, 7, 2]
 
         DataStream<Row> exampleStream = tableEnv.toChangelogStream(exampleTable);
         exampleStream.print();
@@ -91,17 +111,16 @@ public class App
           Row.of(LocalDateTime.parse("2021-08-21T10:01:00"), "Alice", 43, true))
           .returns(
             Types.ROW_NAMED(
-                new String[] {"ts", "entity", "duration", "won"},
+                new String[] {"ts", "user", "duration", "won"},
                 Types.LOCAL_DATE_TIME, Types.STRING, Types.INT, Types.BOOLEAN));
         tableEnv.createTemporaryView(
           "GamePlay",
           victories,
           Schema.newBuilder()
               .column("ts", DataTypes.TIMESTAMP(3).notNull())
-              .column("entity", DataTypes.STRING().notNull())
+              .column("user", DataTypes.STRING().notNull())
               .column("duration", DataTypes.INT())
               .column("won", DataTypes.BOOLEAN())
-              .primaryKey("entity")
               .watermark("ts", "ts")
               .build());
 
@@ -113,38 +132,48 @@ public class App
           Row.of(LocalDateTime.parse("2021-08-21T03:51:00"), "Bob"))
           .returns(
             Types.ROW_NAMED(
-                new String[] {"ts", "entity"},
+                new String[] {"ts", "user"},
                 Types.LOCAL_DATE_TIME, Types.STRING));
         tableEnv.createTemporaryView(
           "Purchase",
           purchases,
           Schema.newBuilder()
               .column("ts", DataTypes.TIMESTAMP(3))
-              .column("entity", DataTypes.STRING())
+              .column("user", DataTypes.STRING())
               .watermark("ts", "ts")
               .build());
     }
 
-    static Table createTrainingExamples(StreamTableEnvironment tableEnv, String features, String target) throws Exception {
+    static Table createTrainingExamples(StreamTableEnvironment tableEnv, String features, String target, String examples) throws Exception {
         // Define features
         // 
         // These features are going to be consumed to build a versioned table.
         // This requires that each row have a key and a timestamp.
         // The versioned row exposes the most recent row for each key, and can be used as the RHS of a temporal join.
+        //
+        // NOTE: This use of "AddWatermark" is the jankiest part of this prototype.
+        // In order to build a versioned table, we need to a time value to associate with each element in the changelog produced by the feature query.
+        // Unfortunately, Flink doesn't seem to preserve the event time of the SQL query once it's converted to a changelog stream.
+        // This hack used here is to access the _watermark_ of each changelog row rather than it's timestamp.
+        // The watermark is related to event time but not strictly the same - in most cases the watermark is delayed by a fixed amount from event times to accomodate late data.
+        // A better solution would be to assign changelog rows the event time at which they were computed.
+        // Another possibilty (that doens't require changes to Flink) would be to parameterize watermark offset, allowing us to deterministically reconstruct event time.
+        //
+        // NOTE: This hard-codes feature (and later, target) column names and types, but it should be possible to use schema reflection to do this generically.
         tableEnv.createTemporaryView(
           "Features",
           tableEnv.toChangelogStream(
           tableEnv.sqlQuery(features))
             .process(new AddWatermark())
             .returns(Types.ROW_NAMED(
-                new String[] {"ts", "entity", "loss_duration"},
+                new String[] {"_change_time", "_entity", "loss_duration"},
                 Types.LOCAL_DATE_TIME, Types.STRING, Types.INT)),
           Schema.newBuilder()
-              .column("ts", DataTypes.TIMESTAMP(3).notNull())
-              .column("entity", DataTypes.STRING().notNull())
+              .column("_change_time", DataTypes.TIMESTAMP(3).notNull())
+              .column("_entity", DataTypes.STRING().notNull())
               .column("loss_duration", DataTypes.INT())
-              .primaryKey("entity")
-              .watermark("ts", "ts")
+              .primaryKey("_entity")
+              .watermark("_change_time", "_change_time")
               .build()
         );
                
@@ -157,45 +186,27 @@ public class App
           tableEnv.sqlQuery(target))
             .process(new AddWatermark())
             .returns(Types.ROW_NAMED(
-                new String[] {"ts", "entity", "cnt"},
+                new String[] {"_change_time", "_entity", "cnt"},
                 Types.LOCAL_DATE_TIME, Types.STRING, Types.LONG)),
           Schema.newBuilder()
-              .column("ts", DataTypes.TIMESTAMP(3).notNull())
-              .column("entity", DataTypes.STRING().notNull())
+              .column("_change_time", DataTypes.TIMESTAMP(3).notNull())
+              .column("_entity", DataTypes.STRING().notNull())
               .column("cnt", DataTypes.BIGINT())
-              .primaryKey("entity")
-              .watermark("ts", "ts")
+              .primaryKey("_entity")
+              .watermark("_change_time", "_change_time")
               .build()
         );
 
-        // STEP 2: Define prediction times
-        //
-        // The SQL for this is ugly. The inner selection does a windowed aggregation over 2 consecutive game
-        // play events and counts how many of them were lost.
-        //
-        // The wrapping selection then filters rows where the loss count is two.
-        //
-        // Finally, the feature values are pulled in for each example time using a temporal join
-        // against the versioned features table.
+        // Join features into examples.
         Table exampleTable = tableEnv.sqlQuery(
-          "SELECT example.ts, example.entity, features.loss_duration, TIMESTAMPADD(HOUR, 1, example.ts) AS label_time " +
-          "FROM ( " +
-          "  SELECT " +
-          "    ts, " +
-          "    entity, " +
-          "    count(NULLIF(won,true)) OVER ( " +
-          "      PARTITION BY entity " +
-          "      ORDER BY ts " +
-          "      ROWS BETWEEN 1 PRECEDING AND CURRENT ROW " +
-          "    ) as defeat_count " +
-          "  FROM GamePlay " +
-          ") AS example " +
-          "LEFT JOIN Features FOR SYSTEM_TIME AS OF example.ts AS features " +
-          "ON example.entity = features.entity " +
-          "WHERE defeat_count = 2 "
+          "WITH example AS ( " + examples + ")" +
+          "SELECT example._entity, example._prediction_time, example._label_time, features.loss_duration " +
+          "FROM example " +
+          "LEFT JOIN Features FOR SYSTEM_TIME AS OF example._prediction_time AS features " +
+          "ON example._entity = features._entity "
         );
         
-        // STEP 3: Shift forward to label time
+        // Shift examples forward to label time
         //
         // This plays some tricks with Flink's API's to re-assign the event time associated
         // with each event. First, we calculated the desired label time as one of the features
@@ -203,23 +214,22 @@ public class App
         // API and then a view (in the Table API) is built from the data stream. This allows us to 
         // provide a new schema for the view, where the label time is used for the watermark. 
         tableEnv.createTemporaryView(
-          "Example",
+          "example",
           tableEnv.toDataStream(exampleTable),
           Schema.newBuilder()
-              .column("ts", DataTypes.TIMESTAMP(3))
-              .column("entity", DataTypes.STRING())
+              .column("_entity", DataTypes.STRING())
+              .column("_prediction_time", DataTypes.TIMESTAMP(3))
+              .column("_label_time", DataTypes.TIMESTAMP(3))
               .column("loss_duration", DataTypes.INT())
-              .column("label_time", DataTypes.TIMESTAMP(3))
-              .watermark("label_time", "label_time - INTERVAL '1' MINUTE")
+              .watermark("_label_time", "_label_time")
               .build());
 
-
-
+        // Join targets into examples
         return tableEnv.sqlQuery(
-            "SELECT Example.ts, Example.label_time, target.ts, Example.entity, Example.loss_duration, target.cnt " +
-            "FROM Example " +
-            "LEFT JOIN Target FOR SYSTEM_TIME AS OF Example.label_time AS target " +
-            "ON Example.entity = target.entity "
+            "SELECT example._entity, example._prediction_time, example._label_time, example.loss_duration, target.cnt " +
+            "FROM example " +
+            "LEFT JOIN Target FOR SYSTEM_TIME AS OF example._label_time AS target " +
+            "ON example._entity = target._entity "
         );
     }
 }
