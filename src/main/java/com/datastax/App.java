@@ -34,11 +34,39 @@ public class App
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
-        // Real-time ML example
-        // This roughly follows the example in the slides: https://docs.google.com/presentation/d/1DEuk2NDiujmzIHAHDTX_dc8-sUHqf0h1KSl4HdpWKpQ/edit#slide=id.p12
+        /*
+         * Real-time ML example
+         * 
+         * This roughly follows the example in the slides: https://docs.google.com/presentation/d/1DEuk2NDiujmzIHAHDTX_dc8-sUHqf0h1KSl4HdpWKpQ/edit#slide=id.p12
+         * 
+         * Questions:
+         * 
+         * - How is a temporal join different than a vanilla join consumed as a changelog?
+         * 
+         *    I think the difference has to do with fixing values computed from a stream to an instant.
+         *    A vanilla join A<->B produces an evolving relation between the two keys as events are added to tables.
+         *    OTOH, a temporal join (A,t)<->B@t produces a relation between the tuple (A,t) and the value of key B at time t. 
+         *    The result is that the value B@t doesn't change, even if new events affect the value of B.
+         *    Note that both A and t may change over time, but for a _given_ tuple, B@t is constant.
+         * 
+         */
 
 
+        // Create GamePlay and Purchase tables and populate them with some rows.
+        setupTables(env, tableEnv);
 
+        Table exampleTable = createTrainingExamples(tableEnv);
+        // +I[2021-08-21T03:46, 2021-08-21T04:46, 2021-08-21T03:51, Bob, 11, 1]
+        // +I[2021-08-21T08:35, 2021-08-21T09:35, 2021-08-21T01:35, Alice, 7, 2]
+
+        DataStream<Row> exampleStream = tableEnv.toChangelogStream(exampleTable);
+        exampleStream.print();
+        exampleStream.writeAsText("output.txt", WriteMode.OVERWRITE);
+
+        env.execute();
+    }
+
+    static void setupTables(StreamExecutionEnvironment env, StreamTableEnvironment tableEnv) throws Exception {
         // Build GamePlay table
         // 
         // This builds each row and then assigns names and types to the fields.
@@ -66,10 +94,11 @@ public class App
           "GamePlay",
           victories,
           Schema.newBuilder()
-              .column("ts", DataTypes.TIMESTAMP(3))
-              .column("entity", DataTypes.STRING())
+              .column("ts", DataTypes.TIMESTAMP(3).notNull())
+              .column("entity", DataTypes.STRING().notNull())
               .column("duration", DataTypes.INT())
               .column("won", DataTypes.BOOLEAN())
+              .primaryKey("entity")
               .watermark("ts", "ts")
               .build());
 
@@ -91,8 +120,10 @@ public class App
               .column("entity", DataTypes.STRING())
               .watermark("ts", "ts")
               .build());
+    }
 
-        // STEP 1: Define features
+    static Table createTrainingExamples(StreamTableEnvironment tableEnv) throws Exception {
+            // STEP 1: Define features
         // These features are going to be consumed to build a versioned table.
         // This requires that each row have a key and a timestamp - the versioned row exposes
         // the most recent row for each key, and can be used as the RHS of a temporal join
@@ -181,24 +212,11 @@ public class App
               .build()
         );
 
-
-        tableEnv.createTemporaryView(
-          "ExampleWithTarget", 
-          tableEnv.sqlQuery(
+        return tableEnv.sqlQuery(
             "SELECT Example.ts, Example.label_time, target.ts, Example.entity, Example.loss_duration, target.cnt " +
             "FROM Example " +
             "LEFT JOIN Target FOR SYSTEM_TIME AS OF Example.label_time AS target " +
             "ON Example.entity = target.entity "
-          )); 
-
-        Table resultTable = tableEnv.sqlQuery("SELECT * FROM ExampleWithTarget");
-        // +I[2021-08-21T03:46, 2021-08-21T04:46, 2021-08-21T03:51, Bob, 11, 1]
-        // +I[2021-08-21T08:35, 2021-08-21T09:35, 2021-08-21T01:35, Alice, 7, 2]
-
-        DataStream<Row> resultStream = tableEnv.toChangelogStream(resultTable);
-        resultStream.print();
-        resultStream.writeAsText("output.txt", WriteMode.OVERWRITE);
-
-        env.execute();
+        );
     }
 }
