@@ -148,21 +148,20 @@ public class App
         // The versioned row exposes the most recent row for each key, and can be used as the RHS of a temporal join.
         //
         // NOTE: This use of "AddWatermark" is the jankiest part of this prototype.
-        // In order to build a versioned table, we need to a time value to associate with each element in the changelog produced by the feature query.
+        // In order to build a versioned table, we need a time value to associate with each row in the changelog produced by the original query.
         // Unfortunately, Flink doesn't seem to preserve the event time of the SQL query once it's converted to a changelog stream.
-        // This hack used here is to access the _watermark_ of each changelog row rather than it's timestamp.
-        // The watermark is related to event time but not strictly the same - in most cases the watermark is delayed by a fixed amount from event times to accomodate late data.
+        // The hack used here is to access the _watermark_ of each changelog row rather than it's timestamp.
+        //
+        // The watermark is _related_ to event time but not strictly the same - in most cases the watermark is delayed by a fixed amount from event time to accommodate late data.
         // A better solution would be to assign changelog rows the event time at which they were computed.
         // Another possibilty (that doens't require changes to Flink) would be to parameterize watermark offset, allowing us to deterministically reconstruct event time.
-        //
-        // NOTE: This hard-codes feature (and later, target) column names and types, but it should be possible to use schema reflection to do this generically.
         tableEnv.createTemporaryView(
           "Features",
           tableEnv.toChangelogStream(
             tableEnv.sqlQuery(features))
               .process(new AddWatermark())
               .returns(Types.ROW_NAMED(
-                  new String[] {"_change_time", "_entity", "loss_duration"},
+                  new String[] {"_change_time", "_entity", "loss_duration"}, // NOTE: This hard-codes feature (and later, target) column names and types, but it should be possible to use schema reflection to do this generically.
                   Types.LOCAL_DATE_TIME, Types.STRING, Types.INT)),
           Schema.newBuilder()
               .column("_change_time", DataTypes.TIMESTAMP(3).notNull())
